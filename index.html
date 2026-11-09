@@ -58,6 +58,25 @@
   .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
   .bar span { display: block; height: 100%; }
   #top .ball { width: 34px; height: 34px; font-size: 14px; }
+
+  /* ── 추첨 연출 ── */
+  .stage { text-align: center; font-weight: 700; font-size: 18px; min-height: 28px; margin-bottom: 8px; }
+  .stage.big { font-size: 22px; color: #e8590c; animation: pulse .5s ease-in-out infinite alternate; }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+  .game.active { background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 12px; }
+  .game { transition: background .3s; padding-left: 6px; padding-right: 6px; }
+  .ball.pending { background: var(--line); color: var(--muted); text-shadow: none; box-shadow: none; animation: none; }
+  .ball.spin { animation: shake .09s linear infinite; }
+  @keyframes shake { 0% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(-3px) rotate(8deg); } 100% { transform: translateY(0) rotate(-8deg); } }
+  .ball.lock { animation: lock .5s cubic-bezier(.2, 1.8, .4, 1) both; }
+  @keyframes lock { 0% { transform: scale(1.7); filter: brightness(1.6); } 100% { transform: scale(1); filter: none; } }
+  .ball.bonus.lock { animation: lock .6s cubic-bezier(.2, 1.8, .4, 1) both, glow 1.2s ease-in-out .6s 3; }
+  @keyframes glow { 50% { box-shadow: 0 0 0 6px rgba(255, 196, 0, .55), 0 0 24px 8px rgba(255, 196, 0, .6); } }
+  .ball.settle { animation: settle .4s ease both; }
+  @keyframes settle { from { transform: translateY(-10px); opacity: .3; } to { transform: none; opacity: 1; } }
+  .row-btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .hidden { display: none; }
   @media (max-width: 420px) { .ball { width: 36px; height: 36px; font-size: 14px; } }
 </style>
 </head>
@@ -96,13 +115,16 @@
       </label>
     </div>
     <p class="hint" id="hint"></p>
-    <div style="display:flex; gap:8px; margin-top:8px;">
-      <button class="primary" id="gen">번호 생성</button>
+    <div class="row-btns">
+      <button class="primary" id="gen">🎰 추첨 시작</button>
+      <button class="ghost hidden" id="skip">⏩ 건너뛰기</button>
       <button class="ghost" id="copy">복사</button>
+      <button class="ghost" id="sound">🔊 소리 켬</button>
     </div>
   </section>
 
   <section class="card">
+    <div class="stage" id="stage"></div>
     <div id="result"><p class="empty">‘번호 생성’ 버튼을 눌러보세요.</p></div>
   </section>
 
@@ -219,9 +241,9 @@ function ballsHTML(nums, delay) {
 }
 
 function render() {
-  $("result").innerHTML = current.length
+  if (!drawing) $("result").innerHTML = current.length
     ? current.map((g, i) => `<div class="game"><span class="tag">${LABELS[i]}</span><div class="balls">${ballsHTML(g, true)}</div></div>`).join("")
-    : `<p class="empty">‘번호 생성’ 버튼을 눌러보세요.</p>`;
+    : `<p class="empty">‘추첨 시작’ 버튼을 눌러보세요.</p>`;
   $("history").innerHTML = history.length
     ? history.map(h => `<div class="game"><span style="min-width:92px">${h.time}</span><div class="balls">${ballsHTML(h.nums)}</div></div>`).join("")
     : `<p class="empty">기록이 없습니다.</p>`;
@@ -237,14 +259,119 @@ $("gen").onclick = () => {
   if (45 - x.nums.length < 7) return setHint("제외 번호가 너무 많습니다. (보너스 포함 7개가 필요해요)", true);
   setHint("");
   const weights = getWeights();
-  current = Array.from({ length: +$("count").value }, () => makeGame(f.nums, x.nums, weights));
-  const time = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  history = [...current.map(nums => ({ time, nums })), ...history].slice(0, 20);
-  try { localStorage.setItem("lottoHistory", JSON.stringify(history)); } catch (e) {}
-  render();
+  const games = Array.from({ length: +$("count").value }, () => makeGame(f.nums, x.nums, weights));
+  drawAll(games);
 };
 
+// ───────── 추첨 연출 ─────────
+let drawing = false, skipping = false;
+let muted = false;
+try { muted = localStorage.getItem("lottoMuted") === "1"; } catch (e) {}
+
+function sleep(ms) { return skipping ? Promise.resolve() : new Promise(r => setTimeout(r, ms)); }
+
+// 효과음 (Web Audio, 파일 없이 생성)
+let audio;
+function beep(freq, dur, vol = 0.05, type = "square", when = 0) {
+  if (muted || skipping) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audio.currentTime + when, o = audio.createOscillator(), g = audio.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(audio.destination);
+    o.start(t); o.stop(t + dur);
+  } catch (e) {}
+}
+const tick = () => beep(700 + randInt(500), 0.03, 0.025);
+const ding = () => beep(1320, 0.3, 0.07, "triangle");
+const fanfare = () => [523, 659, 784, 1047].forEach((f, i) => beep(f, 0.35, 0.07, "triangle", i * 0.12));
+
+function updateSoundBtn() { $("sound").textContent = muted ? "🔇 소리 끔" : "🔊 소리 켬"; }
+$("sound").onclick = () => {
+  muted = !muted; updateSoundBtn();
+  try { localStorage.setItem("lottoMuted", muted ? "1" : "0"); } catch (e) {}
+};
+updateSoundBtn();
+
+function setStage(text, big) { $("stage").textContent = text; $("stage").className = "stage" + (big ? " big" : ""); }
+
+function setBall(el, n, cls) { el.textContent = n; el.className = `ball ${colorClass(n)} ${cls}`; }
+
+// 숫자가 빠르게 돌다가 점점 느려지며 멈춤
+async function spinBall(el, final, duration, isBonus) {
+  const start = performance.now();
+  let delay = 30;
+  while (!skipping && performance.now() - start < duration) {
+    setBall(el, 1 + randInt(45), "spin");
+    tick();
+    await sleep(delay);
+    delay = Math.min(delay * 1.08, 240);
+  }
+  setBall(el, final, "lock" + (isBonus ? " bonus" : ""));
+  if (isBonus) fanfare(); else ding();
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) { const j = randInt(i + 1); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+async function drawAll(games) {
+  drawing = true; skipping = false; current = [];
+  $("gen").disabled = true; $("skip").classList.remove("hidden");
+  const pending = `<span class="ball pending">?</span>`;
+  $("result").innerHTML = games.map((g, i) =>
+    `<div class="game"><span class="tag">${LABELS[i]}</span><div class="balls">${pending.repeat(6)}<span class="plus">+</span>${pending}</div></div>`).join("");
+  const rows = [...$("result").querySelectorAll(".game")];
+
+  setStage("추첨기를 돌리는 중…", true);
+  await sleep(900);
+
+  for (let gi = 0; gi < games.length; gi++) {
+    const g = games[gi], row = rows[gi];
+    const balls = [...row.querySelectorAll(".ball")];
+    const speed = gi === 0 ? 1 : 0.55;           // 첫 게임은 천천히, 이후는 조금 빠르게
+    row.classList.add("active");
+    row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+    // 본 번호 6개: 실제 추첨처럼 뽑힌 순서대로 공개
+    const order = shuffle(g.slice(0, 6));
+    for (let k = 0; k < 6; k++) {
+      setStage(`${LABELS[gi]} 게임 · ${k + 1}번째 번호`, k === 5);
+      await spinBall(balls[k], order[k], (700 + k * 160) * speed);
+      await sleep((k === 5 ? 500 : 280) * speed);
+    }
+    // 오름차순 정렬
+    for (let k = 0; k < 6; k++) setBall(balls[k], g[k], "settle");
+    await sleep(500 * speed);
+
+    // 보너스: 뜸 들이기 → 길게 회전
+    setStage("두구두구두구… 🥁", true);
+    for (let d = 0; d < 10 && !skipping; d++) { beep(160 + d * 12, 0.08, 0.06, "sawtooth"); await sleep(110 * speed); }
+    setStage(`${LABELS[gi]} 게임 · 보너스 번호!`, true);
+    await spinBall(balls[6], g[6], 1900 * speed, true);
+    current.push(g);
+    await sleep(900 * speed);
+    row.classList.remove("active");
+  }
+
+  const time = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  history = [...games.map(nums => ({ time, nums })), ...history].slice(0, 20);
+  try { localStorage.setItem("lottoHistory", JSON.stringify(history)); } catch (e) {}
+  if (skipping) { skipping = false; fanfare(); }
+  setStage("🎉 추첨 완료! 행운을 빕니다 🍀");
+  render();            // drawing=true 상태라 결과 영역은 그대로 두고 기록만 갱신
+  drawing = false;
+  $("gen").disabled = false; $("skip").classList.add("hidden");
+}
+
+$("skip").onclick = () => { skipping = true; };
+
 $("copy").onclick = async () => {
+  if (drawing) return setHint("추첨이 끝난 뒤에 복사할 수 있어요.", true);
   if (!current.length) return setHint("먼저 번호를 생성하세요.", true);
   const text = current.map((g, i) => `${LABELS[i]}: ${g.slice(0, 6).join(", ")} + 보너스 ${g[6]}`).join("\n");
   try { await navigator.clipboard.writeText(text); setHint("복사되었습니다!"); }
