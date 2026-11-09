@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로또 번호 생성기</title>
+<style>
+  :root {
+    --bg: #f4f5f9; --card: #ffffff; --text: #1d2130; --muted: #6b7185;
+    --line: #e3e5ee; --accent: #3b5bdb; --accent-text: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161d; --card: #1e212b; --text: #eceef4; --muted: #9aa0b4;
+            --line: #2e3240; --accent: #5c7cfa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Pretendard", "Malgun Gothic", system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 28px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+          padding: 20px; margin-bottom: 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  select, input { font: inherit; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line);
+                  background: var(--bg); color: var(--text); min-width: 0; }
+  .grow { flex: 1 1 160px; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 11px 18px;
+           cursor: pointer; }
+  .primary { background: var(--accent); color: var(--accent-text); }
+  .ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .hint { font-size: 12px; color: var(--muted); margin: 10px 0 0; min-height: 1em; }
+  .hint.err { color: #e03131; }
+  .game { display: flex; align-items: center; gap: 10px; padding: 10px 0;
+          border-bottom: 1px solid var(--line); }
+  .game:last-child { border-bottom: 0; }
+  .tag { width: 22px; font-weight: 700; color: var(--muted); }
+  .balls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ball { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center;
+          font-weight: 700; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.35);
+          box-shadow: inset -4px -6px 10px rgba(0,0,0,.18), inset 3px 4px 8px rgba(255,255,255,.35);
+          animation: pop .35s ease-out both; }
+  @keyframes pop { from { transform: scale(0) rotate(-90deg); opacity: 0; } to { transform: none; opacity: 1; } }
+  .c1 { background: #fbc400; } .c2 { background: #69c8f2; } .c3 { background: #ff7272; }
+  .c4 { background: #aaaaaa; } .c5 { background: #b0d840; }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+  .row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .row-head h2 { font-size: 16px; margin: 0; }
+  .history .game { font-size: 14px; color: var(--muted); }
+  .history .ball { width: 30px; height: 30px; font-size: 13px; animation: none; }
+  @media (max-width: 420px) { .ball { width: 36px; height: 36px; font-size: 14px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎱 로또 번호 생성기</h1>
+  <p class="sub">1~45 중 중복 없이 6개 번호를 무작위로 뽑습니다.</p>
+
+  <section class="card">
+    <div class="controls">
+      <label>게임 수
+        <select id="count">
+          <option>1</option><option>2</option><option>3</option><option>4</option>
+          <option selected>5</option>
+        </select>
+      </label>
+      <label class="grow">고정 번호 (최대 5개)
+        <input id="fixed" placeholder="예: 7, 14">
+      </label>
+      <label class="grow">제외 번호
+        <input id="exclude" placeholder="예: 1, 45">
+      </label>
+    </div>
+    <p class="hint" id="hint"></p>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="primary" id="gen">번호 생성</button>
+      <button class="ghost" id="copy">복사</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div id="result"><p class="empty">‘번호 생성’ 버튼을 눌러보세요.</p></div>
+  </section>
+
+  <section class="card history">
+    <div class="row-head"><h2>최근 생성 기록</h2><button class="ghost" id="clear">지우기</button></div>
+    <div id="history"><p class="empty">기록이 없습니다.</p></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const LABELS = "ABCDE";
+let current = [];
+let history = [];
+try { history = JSON.parse(localStorage.getItem("lottoHistory") || "[]"); } catch (e) {}
+
+function colorClass(n) { return "c" + Math.min(5, Math.ceil(n / 10)); }
+
+function parseNums(text) {
+  const nums = (text.match(/\d+/g) || []).map(Number);
+  const bad = nums.filter(n => n < 1 || n > 45);
+  return { nums: [...new Set(nums.filter(n => n >= 1 && n <= 45))], bad };
+}
+
+function randInt(max) { // 0..max-1, 암호학적 난수
+  const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % max;
+}
+
+function makeGame(fixed, exclude) {
+  const pool = [];
+  for (let i = 1; i <= 45; i++) if (!fixed.includes(i) && !exclude.includes(i)) pool.push(i);
+  const picked = [...fixed];
+  while (picked.length < 6) picked.push(pool.splice(randInt(pool.length), 1)[0]);
+  return picked.sort((a, b) => a - b);
+}
+
+function ballsHTML(nums, delay) {
+  return nums.map((n, i) =>
+    `<span class="ball ${colorClass(n)}" style="animation-delay:${delay ? i * 0.08 : 0}s">${n}</span>`).join("");
+}
+
+function render() {
+  $("result").innerHTML = current.length
+    ? current.map((g, i) => `<div class="game"><span class="tag">${LABELS[i]}</span><div class="balls">${ballsHTML(g, true)}</div></div>`).join("")
+    : `<p class="empty">‘번호 생성’ 버튼을 눌러보세요.</p>`;
+  $("history").innerHTML = history.length
+    ? history.map(h => `<div class="game"><span style="min-width:92px">${h.time}</span><div class="balls">${ballsHTML(h.nums)}</div></div>`).join("")
+    : `<p class="empty">기록이 없습니다.</p>`;
+}
+
+function setHint(msg, err) { $("hint").textContent = msg; $("hint").className = "hint" + (err ? " err" : ""); }
+
+$("gen").onclick = () => {
+  const f = parseNums($("fixed").value), x = parseNums($("exclude").value);
+  if (f.bad.length || x.bad.length) return setHint("번호는 1~45 사이여야 합니다.", true);
+  if (f.nums.length > 5) return setHint("고정 번호는 최대 5개까지 가능합니다.", true);
+  if (f.nums.some(n => x.nums.includes(n))) return setHint("같은 번호를 고정과 제외에 동시에 넣을 수 없습니다.", true);
+  if (45 - f.nums.length - x.nums.length < 6 - f.nums.length) return setHint("제외 번호가 너무 많습니다.", true);
+  setHint("");
+  current = Array.from({ length: +$("count").value }, () => makeGame(f.nums, x.nums));
+  const time = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  history = [...current.map(nums => ({ time, nums })), ...history].slice(0, 20);
+  try { localStorage.setItem("lottoHistory", JSON.stringify(history)); } catch (e) {}
+  render();
+};
+
+$("copy").onclick = async () => {
+  if (!current.length) return setHint("먼저 번호를 생성하세요.", true);
+  const text = current.map((g, i) => `${LABELS[i]}: ${g.join(", ")}`).join("\n");
+  try { await navigator.clipboard.writeText(text); setHint("복사되었습니다!"); }
+  catch (e) { setHint("복사에 실패했습니다.", true); }
+};
+
+$("clear").onclick = () => {
+  history = [];
+  try { localStorage.removeItem("lottoHistory"); } catch (e) {}
+  render();
+};
+
+render();
+</script>
+</body>
+</html>
